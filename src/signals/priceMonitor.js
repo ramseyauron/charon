@@ -98,7 +98,9 @@ export async function monitorPriceAlerts() {
 
         db.prepare("UPDATE price_alerts SET status = 'triggered', triggered_at_ms = ? WHERE id = ?").run(now(), alert.id);
         triggered++;
-        console.log(`[dip] triggered ${alert.mint.slice(0, 8)}... at $${currentPrice.toFixed(8)} (target: $${alert.target_price_usd?.toFixed(8)})`);
+        const triggered = db.prepare('UPDATE dip_alerts SET triggered_at_ms = ? WHERE id = ?')
+          .run(now(), alert.id);
+        // silently process alert
       }
     } catch (err) {
       console.log(`[dip] alert ${alert.id} error: ${err.message}`);
@@ -106,7 +108,7 @@ export async function monitorPriceAlerts() {
   }
 
   if (triggered || expired) {
-    console.log(`[dip] ${triggered} triggered, ${expired} expired, ${alerts.length - triggered - expired} remaining`);
+    if (triggered > 0) console.log(`[dip] ${triggered} triggered, ${expired} expired`);
   }
 }
 

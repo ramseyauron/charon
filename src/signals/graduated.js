@@ -22,5 +22,5 @@ export async function fetchGraduatedCoins() {
     const ts = Number(coin.graduationDate || coin.seenAt || 0);
     if (ts > 0 && ts < cutoff) graduated.delete(mint);
   }
-  console.log(`[graduated] loaded ${coins.length}, tracking ${graduated.size}`);
+  if (coins.length > 0) console.log(`[graduated] loaded ${coins.length}`);
 }

@@ -62,7 +62,8 @@ export async function fetchAxiomTrending(timePeriod = '1h') {
       if (Number(token.seenAt || 0) < cutoff) axiom.delete(mint);
     }
 
-    console.log(`[axiom] loaded ${rows.length}, tracking ${axiom.size}`);
+  const rows = axiom.values();
+  if (rows.length > 0) console.log(`[axiom] loaded ${rows.length}`);
     return rows;
   } catch (err) {
     console.log(`[axiom] ${err.response?.status || ''} ${err.message}`);

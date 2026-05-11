@@ -1,7 +1,8 @@
 import { bot } from './bot.js';
 import { TELEGRAM_CHAT_ID } from '../config.js';
 import { now, json } from '../utils.js';
-import { escapeHtml, fmtPct } from '../format.js';
+import { makeFailureTracker } from '../utils.js';
+import { escapeHtml, fmtPct, fmtSol, fmtUsd, short } from '../format.js';
 import { db } from '../db/connection.js';
 import { numSetting, boolSetting, setSetting, activeStrategy, setActiveStrategy, strategyById, updateStrategyConfig } from '../db/settings.js';
 import { candidateById, latestCandidateByMint, updateCandidateStatus } from '../db/candidates.js';
@@ -18,10 +19,11 @@ import {
   positionsText,
   candidateButtons,
   positionButtons,
+  positionsListKeyboard,
   strategyMenuText,
   strategyKeyboard,
 } from './menus.js';
-import { sendTelegram, sendBatch, sendPositionOpen } from './send.js';
+import { sendTelegram, sendBatch, sendPositionOpen, sendDashboardLiveUpdate } from './send.js';
 import { candidateSummary, formatPosition } from './format.js';
 import { refreshPosition } from '../execution/positions.js';
 import { executeLiveSell } from '../execution/router.js';
@@ -29,6 +31,9 @@ import { handleCallback, editMenuMessage } from './callbacks.js';
 import { consumeNumericFilterInput } from './input.js';
 import { runLearning, sendLessons } from '../learning/commands.js';
 import { fetchWalletPnl } from '../enrichment/wallets.js';
+import { openPositions } from '../db/positions.js';
+
+const trackTelegramPoll = makeFailureTracker('telegram poll', sendTelegram);
 
 export async function handleMessage(msg) {
   const text = (msg.text || '').trim();
@@ -37,6 +42,7 @@ export async function handleMessage(msg) {
   if (!text.startsWith('/')) return;
   if (text.startsWith('/menu')) return sendMenu(chatId);
   if (text.startsWith('/positions')) return sendPositions(chatId);
+  if (text.startsWith('/dashboard')) return sendDashboard(chatId);
   if (text.startsWith('/filters')) return bot.sendMessage(chatId, filtersText(), { parse_mode: 'HTML' });
   if (text.startsWith('/strategy')) {
     const parts = text.split(/\s+/);
@@ -135,10 +141,39 @@ export async function handleMessage(msg) {
       'default_trailing_enabled',
       'default_trailing_percent',
     ]);
+    const strategyScoped = new Set([
+      'min_fee_claim_sol',
+      'min_mcap_usd',
+      'max_mcap_usd',
+      'min_gmgn_total_fee_sol',
+      'min_graduated_volume_usd',
+      'max_top20_holder_percent',
+      'min_saved_wallet_holders',
+      'llm_min_confidence',
+      'max_open_positions',
+      'trending_min_volume_usd',
+      'trending_min_swaps',
+      'trending_max_rug_ratio',
+      'trending_max_bundler_rate',
+    ]);
     if (!valid.has(key) || value == null) {
       return bot.sendMessage(chatId, `Usage: /setfilter &lt;name&gt; &lt;value&gt;\n\n${filtersText()}`, { parse_mode: 'HTML' });
     }
-    setSetting(key, value === 'off' ? '0' : value);
+    const normalized = value === 'off' ? '0' : value;
+    if (strategyScoped.has(key)) {
+      const strat = activeStrategy();
+      const numValue = Number(normalized);
+      if (!Number.isFinite(numValue)) {
+        return bot.sendMessage(chatId, `Invalid numeric value for ${key}.`);
+      }
+      const newConfig = { ...strat };
+      delete newConfig.id;
+      delete newConfig.name;
+      newConfig[key] = numValue;
+      updateStrategyConfig(strat.id, newConfig);
+    } else {
+      setSetting(key, normalized);
+    }
     return bot.sendMessage(chatId, filtersText(), { parse_mode: 'HTML' });
   }
 }
@@ -155,9 +190,20 @@ export async function sendCandidate(chatId, id) {
 }
 
 export async function sendPositions(chatId) {
-  const rows = allPositions(12);
-  const text = rows.length ? rows.map(formatPosition).join('\n\n') : 'No dry-run positions yet.';
-  await bot.sendMessage(chatId, `📍 <b>Positions</b>\n\n${text}`, { parse_mode: 'HTML', disable_web_page_preview: true });
+  const rows = openPositions().slice(0, 12);
+  const text = rows.length ? rows.map(formatPosition).join('\n\n') : 'No open positions.';
+  await bot.sendMessage(chatId, `📍 <b>Positions</b>\n\n${text}`, {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    ...positionsListKeyboard(rows),
+  });
+}
+
+export async function sendDashboard(chatId) {
+  if (String(chatId) !== String(TELEGRAM_CHAT_ID)) {
+    return bot.sendMessage(chatId, 'Dashboard tersedia hanya di chat utama bot.');
+  }
+  await sendDashboardLiveUpdate({ pin: true });
 }
 
 export async function sendPosition(chatId, id, query = null) {
@@ -197,6 +243,7 @@ export async function closePosition(chatId, id, reason) {
   `).run(id, row.mint, now(), price, mcap, row.size_sol, row.token_amount_est, reason, json({ pnlPercent, pnlSol, sell }));
   const label = row.execution_mode === 'live' ? 'Closed live position' : 'Closed dry-run position';
   await bot.sendMessage(chatId, `${label} #${id}: ${escapeHtml(reason)} ${fmtPct(pnlPercent)}`, { parse_mode: 'HTML' });
+  sendDashboardLiveUpdate({ pin: false }).catch((err) => console.log(`[dashboard] refresh after sell failed: ${err.message}`));
 }
 
 export async function updatePositionRule(chatId, id, field, nextValue, query = null) {
@@ -239,6 +286,7 @@ export async function toggleTrailing(chatId, id, query = null) {
 export function setupTelegram() {
   bot.setMyCommands([
     { command: 'menu', description: 'Open Charon menu' },
+    { command: 'dashboard', description: 'Open position dashboard with PnL' },
     { command: 'strategy', description: 'Show/switch strategy' },
     { command: 'stratset', description: 'Set strategy config (stratset id key value)' },
     { command: 'positions', description: 'Show dry-run positions' },
@@ -255,7 +303,9 @@ export function setupTelegram() {
 
   bot.on('callback_query', query => handleCallback(query).catch(err => console.log(`[callback] ${err.message}`)));
   bot.on('message', msg => handleMessage(msg).catch(err => console.log(`[message] ${err.message}`)));
-  bot.on('polling_error', err => console.log(`[telegram] polling ${err.message}`));
+  bot.on('polling_error', err => {
+    trackTelegramPoll(async () => { throw err; });
+  });
 }
 
 async function sendMenu(chatId = TELEGRAM_CHAT_ID) {
@@ -294,10 +344,6 @@ async function sendPnl(chatId, query = null) {
 function parseSetFilter(text) {
   const parts = text.trim().split(/\s+/);
   return { key: parts[1], value: parts[2] };
-}
-
-function allPositions(limit = 10) {
-  return db.prepare('SELECT * FROM dry_run_positions ORDER BY id DESC LIMIT ?').all(limit);
 }
 
 function savedWallets() {

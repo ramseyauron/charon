@@ -1,11 +1,12 @@
 import { setDefaultResultOrder } from 'node:dns';
-import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, GRADUATED_POLL_MS, TRENDING_POLL_MS, POSITION_CHECK_MS, validateConfig } from './config.js';
+import { APP_NAME, SIGNAL_SERVER_URL, SIGNAL_POLL_MS, GRADUATED_POLL_MS, TRENDING_POLL_MS, POSITION_CHECK_MS, PNL_HEARTBEAT_MS, validateConfig } from './config.js';
 import { initDb } from './db/connection.js';
 import { initLiveExecution } from './liveExecutor.js';
 import { setupTelegram } from './telegram/commands.js';
+import { startWebServer } from './web/server.js';
 import { monitorPositions } from './execution/positions.js';
 import { processCandidateFromSignals, maybeProcessDegenCandidate } from './pipeline/orchestrator.js';
-import { sendTelegram } from './telegram/send.js';
+import { sendTelegram, sendPnlHeartbeatUpdate } from './telegram/send.js';
 import { makeFailureTracker } from './utils.js';
 
 setDefaultResultOrder('ipv4first');
@@ -15,6 +16,7 @@ export async function startCharon() {
   initDb();
   initLiveExecution();
   setupTelegram();
+  startWebServer();
 
   if (SIGNAL_SERVER_URL) {
     // ── Server mode: fetch signals from signal server ──────────────────────
@@ -43,6 +45,9 @@ export async function startCharon() {
     const { fetchGraduatedCoins } = await import('./signals/graduated.js');
     const { fetchGmgnTrending, setDegenHandler } = await import('./signals/trending.js');
     const { startWebsocket, setCandidateHandler } = await import('./signals/feeClaim.js');
+    const alert = (msg) => sendTelegram(msg);
+    const trackGraduatedPoll = makeFailureTracker('graduated poll', alert);
+    const trackTrendingPoll = makeFailureTracker('trending poll', alert);
 
     setDegenHandler(maybeProcessDegenCandidate);
     setCandidateHandler(processCandidateFromSignals);
@@ -50,8 +55,8 @@ export async function startCharon() {
     await fetchGraduatedCoins().catch(error => console.log(`[graduated] initial fetch failed: ${error.message}`));
     await fetchGmgnTrending().catch(error => console.log(`[trending] initial fetch failed: ${error.message}`));
 
-    setInterval(() => fetchGraduatedCoins().catch(error => console.log(`[graduated] ${error.message}`)), GRADUATED_POLL_MS);
-    setInterval(() => fetchGmgnTrending().catch(error => console.log(`[trending] ${error.message}`)), TRENDING_POLL_MS);
+    setInterval(() => trackGraduatedPoll(() => fetchGraduatedCoins()), GRADUATED_POLL_MS);
+    setInterval(() => trackTrendingPoll(() => fetchGmgnTrending()), TRENDING_POLL_MS);
     startWebsocket();
 
     console.log(`[bot] ${APP_NAME} started (standalone mode)`);
@@ -60,4 +65,8 @@ export async function startCharon() {
   // Position monitoring runs in both modes
   const trackPositions = makeFailureTracker('position monitor', (msg) => sendTelegram(msg));
   setInterval(() => trackPositions(() => monitorPositions()), POSITION_CHECK_MS);
+
+  // PnL heartbeat update for open positions
+  const trackPnlHeartbeat = makeFailureTracker('pnl heartbeat', (msg) => sendTelegram(msg));
+  setInterval(() => trackPnlHeartbeat(() => sendPnlHeartbeatUpdate()), PNL_HEARTBEAT_MS);
 }

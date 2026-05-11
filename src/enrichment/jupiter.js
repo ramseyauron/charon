@@ -72,7 +72,9 @@ async function fetchJupiterAsset(mint, { useCache = true, ttlMs = 20_000 } = {})
     return data;
   } catch (err) {
     setJupiterAssetBackoff(err);
-    if (err.response?.status !== 429) console.log(`[asset] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
+    if (err.response?.status !== 429) {
+      console.log(`[asset] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
+    }
     return cached?.data || null;
   }
 }
@@ -86,9 +88,9 @@ async function fetchSolUsdPrice() {
     const price = Number(res.data?.[WSOL_MINT]?.usdPrice);
     return Number.isFinite(price) && price > 0 ? price : null;
   } catch (err) {
-    console.log(`[sol-price] ${err.response?.status || ''} ${err.message}`);
-    return null;
+    console.log(`[sol-price] error: ${err.message}`);
   }
+  return null;
 }
 
 async function estimateTokenAmountFromSol(sizeSol, entryPrice) {
@@ -125,7 +127,9 @@ async function fetchJupiterHolders(mint) {
       maxHolderPercent: Math.max(0, ...top20.map(holder => Number(holder.percent || 0))),
     };
   } catch (err) {
-    console.log(`[holders] ${mint.slice(0, 8)}... ${err.response?.status || ''} ${err.message}`);
+    if (err.response?.status !== 429) {
+      // jupiter holders error, non-critical
+    }
     return { count: 0, holders: [], top20: [], top20Percent: null, maxHolderPercent: null };
   }
 }
@@ -178,7 +182,6 @@ async function fetchJupiterChartContext(mint) {
   ];
   const results = await Promise.all(windows.map(([interval, candles, label]) => (
     fetchJupiterChartWindow(mint, interval, candles, label).catch((err) => {
-      console.log(`[chart] ${mint.slice(0, 8)}... ${interval} ${err.message}`);
       return { label, available: false, error: err.message };
     })
   )));

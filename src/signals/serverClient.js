@@ -172,7 +172,7 @@ export async function fetchServerSignals() {
     }
 
     const dipPart = dipAlerts > 0 ? `, ${dipAlerts} dip alerts` : '';
-    console.log(`[server] ${processed} signals, ${triggered} triggered${dipPart}, tracking ${trending.size}`);
+    console.log(`[server] ${processed} signals processed, ${triggered} triggered${dipPart}`);
   } catch (err) {
     console.log(`[server] ${err.message}`);
   }

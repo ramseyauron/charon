@@ -39,7 +39,7 @@ export function trendingSignalPass(row) {
 
 export async function fetchJupiterTrendingRows(interval, limit) {
   if (!JUPITER_API_KEY) {
-    console.log('[trending:jupiter] JUPITER_API_KEY missing');
+    console.log('[trending:jupiter] JUPITER_API_KEY missing (skipping)');
     return [];
   }
   const supported = new Set(['5m', '1h', '6h', '24h']);
@@ -103,7 +103,7 @@ export async function fetchGmgnTrending() {
       storeSignalEvent(mint, 'trending', token.source || source, token);
       if (degenHandler) await degenHandler(mint, token);
     }
-    console.log(`[trending:${source}] loaded ${rows.length}, accepted ${tracked}, tracking ${trending.size}`);
+    if (tracked > 0) console.log(`[trending:${source}] loaded ${rows.length}, tracked ${tracked}`);
   } catch (err) {
     if (source === 'gmgn') setGmgnBackoff('trending', err);
     const status = err.response?.status || '';

@@ -11,7 +11,6 @@ import { openPositions } from '../db/positions.js';
 import { updateCandidateSnapshot } from '../db/candidates.js';
 import { trending } from '../signals/trending.js';
 import { executeLiveSell } from './router.js';
-import { sendPositionExit } from '../telegram/send.js';
 
 export async function freshEntryMarket(mint, candidate) {
   const gmgn = await fetchGmgnTokenInfo(mint, false);
@@ -124,9 +123,14 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   }
   const tpHit = pnlPercent >= Number(position.tp_percent);
   const slHit = pnlPercent <= Number(position.sl_percent);
-  const trailingArmed = position.trailing_armed || (position.trailing_enabled && tpHit);
-  const trailDrop = highWaterMcap > 0 ? (Number(mcap) / highWaterMcap - 1) * 100 : 0;
-  const trailingHit = trailingArmed && position.trailing_enabled && trailDrop <= -Math.abs(Number(position.trailing_percent));
+  // highWaterPnlPercent: PnL% at the peak (e.g. +100%)
+  const highWaterPnlPercent = (highWaterMcap / Number(position.entry_mcap) - 1) * 100;
+  // Trailing arms once the position has reached TP level (or was already armed in DB)
+  const trailingArmed = Boolean(position.trailing_armed) || (position.trailing_enabled && highWaterPnlPercent >= Number(position.tp_percent));
+  // Drop is measured in PnL percentage-points from peak:
+  // e.g. peak +100%, trailing 10% → stop at +90%; triggers when pnlPercent drops 10pp from highWaterPnlPercent
+  const trailDropPp = highWaterPnlPercent - pnlPercent; // positive when price fell from peak
+  const trailingHit = trailingArmed && position.trailing_enabled && trailDropPp >= Math.abs(Number(position.trailing_percent));
   let exitReason = null;
   let closed = false;
 
@@ -139,7 +143,7 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   // Partial TP check
   if (!exitReason && strat?.partial_tp && !position.partial_tp_done && pnlPercent >= strat.partial_tp_at_percent) {
     db.prepare('UPDATE dry_run_positions SET partial_tp_done = 1 WHERE id = ?').run(position.id);
-    console.log(`[position] ${position.id} partial TP at ${pnlPercent.toFixed(1)}% (${strat.partial_tp_sell_percent}% sell)`);
+    console.log(`[position] ${position.id} partial TP triggered at ${pnlPercent.toFixed(1)}%`);
     if (position.execution_mode === 'live' && position.token_amount_raw) {
       try {
         const sellAmount = Math.floor(Number(position.token_amount_raw) * (strat.partial_tp_sell_percent / 100));
@@ -163,9 +167,10 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
   // Standard exit checks
   if (!exitReason) {
-    if (slHit) exitReason = 'SL';
+    // Once trailing is armed, trailing breach should take precedence over SL labeling.
+    if (trailingHit) exitReason = 'TRAILING_TP';
+    else if (slHit) exitReason = 'SL';
     else if (tpHit && !position.trailing_enabled) exitReason = 'TP';
-    else if (trailingHit) exitReason = 'TRAILING_TP';
   }
 
   // Live exits will override these with realized SOL values
@@ -252,6 +257,8 @@ export async function monitorPositions() {
       console.log(`[position] ${position.id} ${err.message}`);
       return null;
     });
-    if (result?.exitReason) await sendPositionExit(result);
+    if (result?.exitReason) {
+      // Position exit logged to DB, visible in web UI only
+    }
   }
 }

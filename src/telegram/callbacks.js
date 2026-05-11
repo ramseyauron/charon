@@ -12,6 +12,7 @@ import {
   mainMenuText,
   walletsText,
   positionsText,
+  positionsListKeyboard,
   candidateButtons,
   sendTpSlDefaults,
   strategyMenuText,
@@ -21,7 +22,7 @@ import { sendTelegram, sendBatch, sendPositionOpen, sendTradeIntent } from './se
 import { candidateSummary } from './format.js';
 import { candidateById, updateCandidateStatus } from '../db/candidates.js';
 import { storeDecision, logDecisionEvent } from '../db/decisions.js';
-import { createDryRunPosition, canOpenMorePositions, openPositionCount, tradingMode } from '../db/positions.js';
+import { createDryRunPosition, canOpenMorePositions, openPositionCount, openPositions, tradingMode } from '../db/positions.js';
 import { executeLiveBuy, executeConfirmedIntent, rejectIntent } from '../execution/router.js';
 import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing } from './commands.js';
 import { requestNumericFilterInput, requestStrategyNumericInput } from './input.js';
@@ -52,7 +53,7 @@ export async function handleCallback(query) {
   if (data === 'menu:filters') return editMenuMessage(query, filtersText(), filtersKeyboard());
   if (data === 'menu:strategy') return editMenuMessage(query, strategyMenuText(), strategyKeyboard());
   if (data === 'menu:wallets') return editMenuMessage(query, walletsText(), navKeyboard());
-  if (data === 'menu:positions') return editMenuMessage(query, positionsText(), navKeyboard());
+  if (data === 'menu:positions') return editMenuMessage(query, positionsText(), positionsListKeyboard(openPositions().slice(0, 12)));
   if (data === 'menu:pnl') {
     const { sendPnl } = await import('./send.js');
     return sendPnl(chatId, query);
@@ -72,6 +73,17 @@ export async function handleCallback(query) {
   if (data.startsWith('stratcfg:')) {
     const key = data.replace('stratcfg:', '');
     return handleStratConfig(query, chatId, key);
+  }
+  if (data.startsWith('stratset:')) {
+    const [, key, rawValue] = data.split(':');
+    const strat = activeStrategy();
+    const numValue = Number(rawValue);
+    const newConfig = { ...strat };
+    delete newConfig.id;
+    delete newConfig.name;
+    newConfig[key] = Number.isFinite(numValue) ? numValue : rawValue;
+    updateStrategyConfig(strat.id, newConfig);
+    return editMenuMessage(query, agentText(), agentKeyboard());
   }
   if (data.startsWith('stratinput:')) {
     const key = data.replace('stratinput:', '');
@@ -95,7 +107,8 @@ export async function handleCallback(query) {
     const row = candidateById(Number(id));
     if (!row) return bot.sendMessage(chatId, 'Candidate not found.');
     if (!canOpenMorePositions()) {
-      return bot.sendMessage(chatId, `Max open positions reached (${openPositionCount()}/${numSetting('max_open_positions', 3)}). Close one first or raise the limit.`);
+      const strat = activeStrategy();
+      return bot.sendMessage(chatId, `Max open positions reached (${openPositionCount()}/${strat.max_open_positions || 'unlimited'}). Close one first or raise the limit.`);
     }
     const candidate = row.candidate;
     const decision = { verdict: 'BUY', confidence: 100, reason: 'Manual dry buy', risks: [], suggested_tp_percent: numSetting('default_tp_percent', 50), suggested_sl_percent: numSetting('default_sl_percent', -25) };
@@ -220,6 +233,18 @@ async function handleStratConfig(query, chatId, key) {
 
 async function updateSettingFromButton(query, key, value) {
   const chatId = query.message?.chat?.id || TELEGRAM_CHAT_ID;
+  if (key === 'max_open_positions') {
+    const strat = activeStrategy();
+    const next = Number(value);
+    if (!Number.isFinite(next)) return bot.sendMessage(chatId, 'Invalid max_open_positions value.');
+    const newConfig = { ...strat };
+    delete newConfig.id;
+    delete newConfig.name;
+    newConfig.max_open_positions = next;
+    updateStrategyConfig(strat.id, newConfig);
+    return editMenuMessage(query, agentText(), agentKeyboard());
+  }
+
   const valid = new Set([
     'min_fee_claim_sol',
     'min_mcap_usd',

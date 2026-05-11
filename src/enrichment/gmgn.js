@@ -118,7 +118,7 @@ function setGmgnBackoff(kind, err) {
   const reason = gmgnErrorText(status, body, err.message);
   gmgnBackoff[gmgnBackoffKey(kind)] = until;
   gmgnBackoff[gmgnReasonKey(kind)] = reason;
-  console.log(`[gmgn:${kind}] backing off until ${new Date(until).toISOString()} (${reason})`);
+  console.log(`[gmgn] backoff until ${new Date(until).toISOString()} (${reason})`);
 }
 
 function gmgnStatusText(kind) {

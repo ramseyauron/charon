@@ -1,6 +1,6 @@
 import { escapeHtml, fmtPct, fmtSol, fmtUsd, short } from '../format.js';
 import { numSetting, boolSetting, setting, activeStrategy, allStrategies } from '../db/settings.js';
-import { openPositionCount, tradingMode, allPositions } from '../db/positions.js';
+import { openPositionCount, tradingMode, openPositions } from '../db/positions.js';
 import { savedWallets } from '../enrichment/wallets.js';
 import { gmgnStatusText } from '../enrichment/gmgn.js';
 import { formatPosition } from './format.js';
@@ -142,9 +142,9 @@ export function agentKeyboard() {
           { text: 'Live', callback_data: 'set:trading_mode:live' },
         ],
         [
-          { text: 'Max Pos 1', callback_data: 'set:max_open_positions:1' },
-          { text: 'Max Pos 3', callback_data: 'set:max_open_positions:3' },
-          { text: 'Max Pos 5', callback_data: 'set:max_open_positions:5' },
+          { text: 'Max Pos 1', callback_data: 'stratset:max_open_positions:1' },
+          { text: 'Max Pos 3', callback_data: 'stratset:max_open_positions:3' },
+          { text: 'Max Pos 5', callback_data: 'stratset:max_open_positions:5' },
         ],
         [
           { text: 'Batch 5', callback_data: 'set:llm_candidate_pick_count:5' },
@@ -185,9 +185,33 @@ export function walletsText() {
 }
 
 export function positionsText() {
-  const rows = allPositions(12);
-  const text = rows.length ? rows.map(formatPosition).join('\n\n') : 'No dry-run positions yet.';
+  const rows = openPositions().slice(0, 12);
+  const text = rows.length ? rows.map(formatPosition).join('\n\n') : 'No open positions.';
   return `📍 <b>Positions</b>\n\n${text}`;
+}
+
+export function positionsListKeyboard(rows = [], options = {}) {
+  const {
+    showPnl = true,
+    maxCols = 1,
+  } = options;
+  const cols = Math.max(1, Math.min(3, Number(maxCols) || 1));
+  const flatButtons = rows.map((row) => {
+    const pnl = row.pnl_percent != null
+      ? Number(row.pnl_percent)
+      : row.entry_mcap && row.high_water_mcap
+        ? (Number(row.high_water_mcap) / Number(row.entry_mcap) - 1) * 100
+        : 0;
+    const ticker = row.symbol || short(row.mint);
+    const text = showPnl ? `${ticker} ${fmtPct(pnl)}` : ticker;
+    return { text, callback_data: `sell:${row.id}` };
+  });
+
+  const gridRows = [];
+  for (let index = 0; index < flatButtons.length; index += cols) {
+    gridRows.push(flatButtons.slice(index, index + cols));
+  }
+  return navKeyboard(gridRows);
 }
 
 export function strategyMenuText() {

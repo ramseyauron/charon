@@ -11,7 +11,7 @@ import { logDecisionEvent } from '../db/decisions.js';
 import { refreshCandidateForExecution } from './positions.js';
 import { bot } from '../telegram/bot.js';
 import { candidateSummary } from '../telegram/format.js';
-import { sendPositionOpen, sendTelegram } from '../telegram/send.js';
+import { sendTelegram } from '../telegram/send.js';
 import { updateCandidateStatus } from '../db/candidates.js';
 import { createTradeIntent } from '../db/intents.js';
 
@@ -42,7 +42,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     guardrails: { balanceLamports: balance, amountLamports, minReserveLamports: LIVE_MIN_SOL_RESERVE_LAMPORTS },
     execution: { positionId, swap },
   });
-  await sendPositionOpen(positionId);
+  // Position logged to DB, visible in web UI only
 }
 
 export async function executeLiveSell(position, reason) {
@@ -105,7 +105,8 @@ export async function executeConfirmedIntent(chatId, intentId) {
       guardrails: { balanceLamports: balance, amountLamports, intentId },
       execution: { positionId, swap },
     });
-    return sendPositionOpen(positionId);
+    // Position logged to DB, visible in web UI only
+    return positionId;
   } catch (err) {
     db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('execution_failed', now(), intentId);
     return bot.sendMessage(chatId, `Live execution failed: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });
