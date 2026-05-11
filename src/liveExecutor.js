@@ -69,6 +69,9 @@ async function jupiterOrder({ inputMint, outputMint, amount }) {
   url.searchParams.set('outputMint', outputMint);
   url.searchParams.set('amount', String(amount));
   url.searchParams.set('taker', liveWallet.publicKey.toBase58());
+  if (Number.isFinite(JUPITER_SLIPPAGE_BPS) && JUPITER_SLIPPAGE_BPS > 0) {
+    url.searchParams.set('slippageBps', String(Math.floor(JUPITER_SLIPPAGE_BPS)));
+  }
   const res = await axios.get(url.toString(), {
     timeout: 20_000,
     headers: { ...JSON_HEADERS, 'x-api-key': JUPITER_API_KEY },

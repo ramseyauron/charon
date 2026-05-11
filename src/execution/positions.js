@@ -3,8 +3,7 @@ import { numSetting, boolSetting, strategyById } from '../db/settings.js';
 import { db } from '../db/connection.js';
 import { firstPositiveNumber, marketCapFromGmgn, tokenPriceFromGmgn } from '../utils.js';
 import { fetchGmgnTokenInfo } from '../enrichment/gmgn.js';
-import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext, fetchJupiterWalletPnl } from '../enrichment/jupiter.js';
-import { liveWalletPubkey } from '../liveExecutor.js';
+import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext } from '../enrichment/jupiter.js';
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { filterCandidate } from '../pipeline/candidateBuilder.js';
 import { openPositions } from '../db/positions.js';
@@ -106,8 +105,8 @@ export async function refreshCandidateForExecution(row) {
 
 const sellInProgress = new Set();
 
-export async function refreshPosition(position, { autoExit = true, jupiterPnl = null } = {}) {
-  const asset = await fetchJupiterAsset(position.mint);
+export async function refreshPosition(position, { autoExit = true } = {}) {
+  const asset = await fetchJupiterAsset(position.mint, { useCache: false });
   const price = firstPositiveNumber(asset?.usdPrice, position.high_water_price, position.entry_price);
   const mcap = firstPositiveNumber(asset?.mcap, asset?.fdv, position.high_water_mcap, position.entry_mcap);
   if (!Number.isFinite(Number(mcap)) || !Number.isFinite(Number(position.entry_mcap)) || Number(position.entry_mcap) <= 0) {
@@ -117,10 +116,6 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
   const highWaterPrice = Math.max(Number(position.high_water_price || 0), Number(price || 0));
   let pnlPercent = (Number(mcap) / Number(position.entry_mcap) - 1) * 100;
   let pnlSol = Number(position.size_sol) * pnlPercent / 100;
-  if (jupiterPnl && Number.isFinite(Number(jupiterPnl.totalPnlPercentageNative))) {
-    pnlPercent = Number(jupiterPnl.totalPnlPercentageNative);
-    pnlSol = Number.isFinite(Number(jupiterPnl.totalPnlNative)) ? Number(jupiterPnl.totalPnlNative) : pnlSol;
-  }
   const tpHit = pnlPercent >= Number(position.tp_percent);
   const slHit = pnlPercent <= Number(position.sl_percent);
   // highWaterPnlPercent: PnL% at the peak (e.g. +100%)
@@ -244,21 +239,13 @@ export async function refreshPosition(position, { autoExit = true, jupiterPnl = 
 
 export async function monitorPositions() {
   const positions = openPositions();
-  let walletPnlData = {};
-  const pubkey = liveWalletPubkey();
-  if (pubkey && positions.some(p => p.execution_mode === 'live')) {
-    walletPnlData = await fetchJupiterWalletPnl(pubkey);
-  }
-  for (const position of positions) {
-    const jupiterPnl = position.execution_mode === 'live'
-      ? (walletPnlData[position.mint]?.pnl || null)
-      : null;
-    const result = await refreshPosition(position, { autoExit: true, jupiterPnl }).catch((err) => {
+  await Promise.allSettled(positions.map(async (position) => {
+    const result = await refreshPosition(position, { autoExit: true }).catch((err) => {
       console.log(`[position] ${position.id} ${err.message}`);
       return null;
     });
     if (result?.exitReason) {
       // Position exit logged to DB, visible in web UI only
     }
-  }
+  }));
 }
